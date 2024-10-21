@@ -65,8 +65,6 @@ int DeleteAllCspPolicies();
 int Do911List();
 int Do911DeleteAll();
 
-//TODO: add ability to retrieve timestamp info (by itself) from policy.
-
 int wmain(int argc, wchar_t** argv)
 {
 	bool bCspMode = false, bLgpoMode = false, bGpoEffectiveMode = false, b911Mode = false;
@@ -194,6 +192,7 @@ int wmain(int argc, wchar_t** argv)
 		// AppLocker CSP interfaces require running as System. They fail silently even if you run with admin rights but not as System.
 		// No "access denied" errors identifiable at all.
 		// So, proactively check for System and error out if not running as System.
+		//TODO: if running as elevated-admin but not as System, incorporate the RunInSession0_Framework to execute the needed code as System.
 		WhoAmI whoAmI;
 		if (!whoAmI.IsSystem())
 		{
