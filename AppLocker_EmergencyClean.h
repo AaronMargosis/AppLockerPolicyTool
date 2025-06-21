@@ -48,7 +48,8 @@ public:
 	/// <summary>
 	/// Delete all files and directories under System32\AppLocker.
 	/// </summary>
+	/// <param name="sErrorInfo">Output: error info if any failures</param>
 	/// <returns>true if successful, false otherwise</returns>
-	static bool DeleteAppLockerBinaryFiles();
+	static bool DeleteAppLockerBinaryFiles(std::wstring& sErrorInfo);
 };
 

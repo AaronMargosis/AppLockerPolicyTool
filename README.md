@@ -51,6 +51,8 @@ Some technical notes on CSP/MDM/AppLocker and interactions with [L]GPO, based on
 * If different policies are applied through CSP/MDM and through [L]GPO, it appears that execution of a
   file is allowed only if it is allowed by both CSP/MDM and [L]GPO evaluations.
 
+* If identical policies are defined through both CSP/MDM and [L]GPO, each event seems to be recorded twice -- once for each interface.
+
 * It doesn't seem possible in AppLocker/CSP/MDM to set a rule collection to "NotConfigured" and no rules - 
   seems to be the equivalent of "allow nothing."
 

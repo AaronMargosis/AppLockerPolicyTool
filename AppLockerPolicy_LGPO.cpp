@@ -19,6 +19,7 @@
 static const std::wstring sParseErrorText = L"Unable to parse AppLocker policy XML";
 static const std::wstring sKeyPathBase = L"Software\\Policies\\Microsoft\\Windows\\SrpV2";
 static const wchar_t* const szEnforcementMode = L"EnforcementMode";
+static const wchar_t* const szServiceEnforcementMode = L"ServiceEnforcementMode";
 static const wchar_t* const szAllowWindows = L"AllowWindows";
 static const wchar_t* const szValue = L"Value";
 // Rule collections
@@ -100,7 +101,7 @@ static bool GetPolicy(
 /// <summary>
 /// Retrieve XML document representing LGPO-configured AppLocker policy.
 /// Does not require administrative rights.
-/// TODO: non-admin gets "access denied" failure if the LGPO directories are not present.
+/// TODO: non-admin gets "access denied" failure if the LGPO Machine or User subdirectories are not present. Test for that.
 /// </summary>
 /// <param name="sAppLockerPolicyXml">Output: AppLocker policy XML</param>
 /// <param name="sErrorInfo">Output: error information</param>
@@ -113,6 +114,7 @@ bool AppLockerPolicy_LGPO::GetLocalPolicy(std::wstring& sAppLockerPolicyXml, std
     if (FAILED(hr))
     {
         sErrorInfo = std::wstring(L"Could not initialize Local GPO: ") + SysErrorMessage(hr);
+        //TODO: check to see whether the GroupPolicy\Machine and GroupPolicy\User directories are present; answer then is "no policy present"
         return false;
     }
 
@@ -349,6 +351,53 @@ static bool IngestRuleCollection(
                 }
             }
         }
+
+        // Optional RuleCollectionExtensions element
+        DWORD
+            dwServiceEnforcementMode = 0, cbServiceEnforcementMode = sizeof(dwServiceEnforcementMode),
+            dwAllowWindows = 0, cbAllowWindows = sizeof(dwAllowWindows);
+        regStatus = RegQueryValueExW(hSubkey, szServiceEnforcementMode, 0, &dwType, (BYTE*)&dwServiceEnforcementMode, &cbServiceEnforcementMode);
+        if (ERROR_SUCCESS == regStatus)
+        {
+            regStatus = RegQueryValueExW(hSubkey, szAllowWindows, 0, &dwType, (BYTE*)&dwAllowWindows, &cbAllowWindows);
+            if (ERROR_SUCCESS == regStatus)
+            {
+                const wchar_t* szSvcEnfModeChoice = nullptr, * szSystemAppsAllowChoice = nullptr;
+                switch (dwServiceEnforcementMode)
+                {
+                case 1:
+                    szSvcEnfModeChoice = L"Enabled";
+                    break;
+                case 2:
+                    szSvcEnfModeChoice = L"ServicesOnly";
+                    break;
+                }
+                switch (dwAllowWindows)
+                {
+                case 0:
+                    szSystemAppsAllowChoice = L"NotEnabled";
+                    break;
+                case 1:
+                    szSystemAppsAllowChoice = L"Enabled";
+                    break;
+                }
+                if (szSvcEnfModeChoice && szSystemAppsAllowChoice)
+                {
+                    strPolicyXml
+                        << L"<RuleCollectionExtensions><ThresholdExtensions><Services EnforcementMode=\""
+                        << szSvcEnfModeChoice
+                        << L"\"/></ThresholdExtensions>"
+                        << L"<RedstoneExtensions><SystemApps Allow=\""
+                        << szSystemAppsAllowChoice
+                        << L"\"/></RedstoneExtensions></RuleCollectionExtensions>"
+                        << std::endl
+                        ;
+                }
+            }
+        }
+
+
+
         // Close the RuleCollection element.
         strPolicyXml << L"</RuleCollection>" << std::endl;
 
@@ -381,7 +430,8 @@ static bool ApplyRuleCollection(
     // Parse the rule collection XML into the pieces we need
     RuleInfoCollection_t rules;
     DWORD dwEnforcementMode = 0;
-    if (!AppLockerXmlParser::ParseRuleCollection(sRuleCollectionXml, dwEnforcementMode, rules))
+    RuleCollectionExtensions_t extensions;
+    if (!AppLockerXmlParser::ParseRuleCollection(sRuleCollectionXml, dwEnforcementMode, extensions, rules))
     {
         sErrorInfo = sParseErrorText;
         return false;
@@ -401,27 +451,41 @@ static bool ApplyRuleCollection(
         regStatus = RegSetValueExW(hSubkey, szEnforcementMode, 0, REG_DWORD, (const BYTE*)&dwEnforcementMode, sizeof(dwEnforcementMode));
         if (ERROR_SUCCESS == regStatus)
         {
-            // Write the "AllowWindows" value into this key - set to 0
-            DWORD zero = 0;
-            regStatus = RegSetValueExW(hSubkey, szAllowWindows, 0, REG_DWORD, (const BYTE*)&zero, sizeof(zero));
+            // Write the "AllowWindows" value into this key
+            regStatus = RegSetValueExW(hSubkey, szAllowWindows, 0, REG_DWORD, (const BYTE*)&extensions.dwAllowWindows, sizeof(extensions.dwAllowWindows));
             if (ERROR_SUCCESS == regStatus)
             {
-                // Go through each rule in the rule collection one by one...
-                for (
-                    RuleInfoCollection_t::const_iterator iterRules = rules.begin();
-                    ERROR_SUCCESS == regStatus && iterRules != rules.end();
-                    ++iterRules
-                    )
+                // Optional - may or may not be present
+                if (extensions.bServicesModePresent)
                 {
-                    // Create the GUID subkey for this rule...
-                    HKEY hRuleKey = NULL;
-                    regStatus = RegCreateKeyExW(hSubkey, iterRules->sGuid.c_str(), 0, NULL, 0, KEY_SET_VALUE, NULL, &hRuleKey, &dwDisposition);
-                    if (ERROR_SUCCESS == regStatus)
+                    regStatus = RegSetValueExW(hSubkey, szServiceEnforcementMode, 0, REG_DWORD, (const BYTE*)&extensions.dwServiceEnforcementMode, sizeof(extensions.dwServiceEnforcementMode));
+                }
+                else
+                {
+                    // Ignore return value -- expect success or the value isn't there.
+                    //regStatus = 
+                    RegDeleteValueW(hSubkey, szServiceEnforcementMode);
+                }
+
+                if (ERROR_SUCCESS == regStatus)
+                {
+                    // Go through each rule in the rule collection one by one...
+                    for (
+                        RuleInfoCollection_t::const_iterator iterRules = rules.begin();
+                        ERROR_SUCCESS == regStatus && iterRules != rules.end();
+                        ++iterRules
+                        )
                     {
-                        // ... and create the "Value" value and set it to the rule's XML
-                        DWORD cbRuleText = (DWORD)((iterRules->sXml.length() + 1) * sizeof(wchar_t));
-                        regStatus = RegSetValueExW(hRuleKey, szValue, 0, REG_SZ, (const BYTE*)iterRules->sXml.c_str(), cbRuleText);
-                        RegCloseKey(hRuleKey);
+                        // Create the GUID subkey for this rule...
+                        HKEY hRuleKey = NULL;
+                        regStatus = RegCreateKeyExW(hSubkey, iterRules->sGuid.c_str(), 0, NULL, 0, KEY_SET_VALUE, NULL, &hRuleKey, &dwDisposition);
+                        if (ERROR_SUCCESS == regStatus)
+                        {
+                            // ... and create the "Value" value and set it to the rule's XML
+                            DWORD cbRuleText = (DWORD)((iterRules->sXml.length() + 1) * sizeof(wchar_t));
+                            regStatus = RegSetValueExW(hRuleKey, szValue, 0, REG_SZ, (const BYTE*)iterRules->sXml.c_str(), cbRuleText);
+                            RegCloseKey(hRuleKey);
+                        }
                     }
                 }
             }

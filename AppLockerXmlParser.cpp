@@ -1,3 +1,5 @@
+//TODO: get a real XML parser library and use that.
+
 #include "AppLockerXmlParser.h"
 
 /// L"AppLockerPolicy" - the root element of an AppLocker policy XML document 
@@ -94,13 +96,19 @@ bool AppLockerXmlParser::ParseRuleCollections(const std::wstring& sPolicyXml, st
 /// </summary>
 /// <param name="sRuleCollectionXml">Input: the XML representing a rule collection</param>
 /// <param name="dwEnforcementMode">Output: an integer corresponding to the collection's enforcement mode: 1 for Enforce, 0 for Audit</param>
+/// <param name="extensions">Output: values corresponding to optional RuleCollectionExtensions element</param>
 /// <param name="rules">A collection of structures containing the XML for each rule and the GUID ID.
 /// Note: returns rule info only if enforcement mode is Enforce or Audit; returns nothing if enforcement mode is "not configured".</param>
 /// <returns>true if successful (even if no rules returned), false on any parsing error.</returns>
-bool AppLockerXmlParser::ParseRuleCollection(const std::wstring& sRuleCollectionXml, unsigned long& dwEnforcementMode, RuleInfoCollection_t& rules)
+bool AppLockerXmlParser::ParseRuleCollection(
+    const std::wstring& sRuleCollectionXml, 
+    unsigned long& dwEnforcementMode, 
+    RuleCollectionExtensions_t& extensions,
+    RuleInfoCollection_t& rules)
 {
     // Initialize output parameters
     dwEnforcementMode = 0;
+    extensions.Clear();
     rules.clear();
 
     // Looking at attributes within the opening RuleCollection element - look for closing '>'
@@ -134,8 +142,14 @@ bool AppLockerXmlParser::ParseRuleCollection(const std::wstring& sRuleCollection
     if (!ParseRules(sRuleCollectionXml, L"FileHashRule", rules))
         return false;
 
+    if (!ParseExtensions(sRuleCollectionXml, extensions))
+        return false;
+
     return true;
 }
+
+static const std::wstring sAngle      = std::wstring(L"<");
+static const std::wstring sAngleSlash = std::wstring(L"</");
 
 /// <summary>
 /// Internal method used by ParseRuleCollection to extract path, publisher, and hash rules separately. 
@@ -146,10 +160,10 @@ bool AppLockerXmlParser::ParseRuleCollection(const std::wstring& sRuleCollection
 /// <returns>true if successful, false on any parsing error.</returns>
 bool AppLockerXmlParser::ParseRules(const std::wstring& sRuleCollectionXml, const wchar_t* szRuleName, RuleInfoCollection_t& rules)
 {
-    // Create strings representing text to find the opening and correspondng closing elements
+    // Create strings representing text to find the opening and corresponding closing elements
     // for this rule.
-    const std::wstring sRuleStartElem = std::wstring(L"<") + szRuleName;
-    const std::wstring sRuleEndElem = std::wstring(L"</") + szRuleName;
+    const std::wstring sRuleStartElem = sAngle + szRuleName;
+    const std::wstring sRuleEndElem = sAngleSlash + szRuleName;
     size_t ixRuleStart = 0;
     while (std::wstring::npos != ixRuleStart)
     {
@@ -185,6 +199,128 @@ bool AppLockerXmlParser::ParseRules(const std::wstring& sRuleCollectionXml, cons
             rules.push_back(ruleInfo);
             // Move up the index before searching for the next rule
             ixRuleStart += ruleInfo.sXml.length();
+        }
+    }
+
+    return true;
+}
+
+/// <summary>
+/// Provide support for AppLocker rule collection extensions
+/// https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/rule-collection-extensions
+/// </summary>
+/// <param name="sRuleCollectionXml">Input: the XML representing a rule collection</param>
+/// <param name="extensions">Output: a collection of AppLocker rule collection extension settings</param>
+/// <returns>true if successful, false on any parsing error.</returns>
+bool AppLockerXmlParser::ParseExtensions(const std::wstring& sRuleCollectionXml, RuleCollectionExtensions_t& extensions)
+{
+    extensions.Clear();
+
+    // Strings representing element names, attribute names, and allowed attribute values.
+    //
+    const wchar_t* szRuleCollectionsExtensions = L"RuleCollectionExtensions";
+   
+    const wchar_t* szThresholdExtensions       = L"ThresholdExtensions";
+    const wchar_t* szServices                  = L"Services";
+    const wchar_t* szEnforcementMode           = L"EnforcementMode";
+    const wchar_t* szEnforcementModeOptions[]  = { L"NotConfigured", L"Enabled", L"ServicesOnly" }; // maps to ServiceEnforcementMode reg value DELETE, DWORD 1, DWORD 2
+    //const size_t nEnforcementModeOptions       = sizeof(szEnforcementModeOptions) / sizeof(szEnforcementModeOptions[0]);
+
+    const wchar_t* szRedstoneExtensions        = L"RedstoneExtensions";
+    const wchar_t* szSystemApps                = L"SystemApps";
+    const wchar_t* szAllow                     = L"Allow";
+    const wchar_t* szAllowOptions[]            = { L"NotEnabled", L"Enabled" }; // maps to AllowWindows reg value DWORD 0, DWORD 1
+    //const size_t nAllowOptions                 = sizeof(szAllowOptions) / sizeof(szAllowOptions[0]);
+
+    const std::wstring sRuleCollectionExtensionsStartElem = sAngle + szRuleCollectionsExtensions;
+    const std::wstring sRuleCollectionExtensionsEndElem = sAngleSlash + szRuleCollectionsExtensions;
+    size_t ixStart = sRuleCollectionXml.find(sRuleCollectionExtensionsStartElem);
+    // Look for rule collection extensions starting element; exit (successfully) if not found
+    if (std::wstring::npos == ixStart)
+        return true;
+    // Look for corresponding closing element; fail if not found
+    size_t ixEnd = sRuleCollectionXml.find(sRuleCollectionExtensionsEndElem, ixStart);
+    if (std::wstring::npos == ixEnd)
+        return false;
+
+    // Assuming well-formed XML, no need to find the ending >, just work with the parts we found
+    std::wstring sExtensionsXml = sRuleCollectionXml.substr(ixStart, ixEnd - ixStart);
+
+    // ThresholdExtensions and RedstoneExtensions must both be present, but their child elements are optional
+    size_t ixThresholdStart = sExtensionsXml.find(sAngle + szThresholdExtensions);
+    size_t ixRedstoneStart = sExtensionsXml.find(sAngle + szRedstoneExtensions);
+    // If either is missing, fail
+    if (std::wstring::npos == ixThresholdStart || std::wstring::npos == ixRedstoneStart)
+        return false;
+    // Get the starts of the ending elements.
+    size_t ixThresholdEnd = sExtensionsXml.find(sAngleSlash + szThresholdExtensions, ixThresholdStart);
+    size_t ixRedstoneEnd = sExtensionsXml.find(sAngleSlash + szRedstoneExtensions, ixRedstoneStart);
+    if (std::wstring::npos == ixThresholdEnd || std::wstring::npos == ixRedstoneEnd)
+        return false;
+
+    // Again, assuming well-formed XML
+    std::wstring sThreshold = sExtensionsXml.substr(ixThresholdStart, ixThresholdEnd - ixThresholdStart);
+    std::wstring sRedstone = sExtensionsXml.substr(ixRedstoneStart, ixRedstoneEnd - ixRedstoneStart);
+    size_t ixServicesStart = sThreshold.find(sAngle + szServices);
+    if (std::wstring::npos != ixServicesStart)
+    {
+        size_t ixEnforcementMode = sThreshold.find(szEnforcementMode, ixServicesStart);
+        if (std::wstring::npos != ixEnforcementMode)
+        {
+            // Get the text between the next two dquotes
+            size_t ixDQ0 = sThreshold.find(L'"', ixEnforcementMode);
+            if (std::wstring::npos == ixDQ0)
+                return false;
+            size_t ixEnforcementModeValue = ixDQ0 + 1;
+            size_t ixDQ1 = sThreshold.find(L'"', ixEnforcementModeValue);
+            if (std::wstring::npos == ixDQ1)
+                return false;
+            std::wstring sEnforcementMode = sThreshold.substr(ixDQ0 + 1, ixDQ1 - ixEnforcementModeValue);
+            if (0 == wcscmp(sEnforcementMode.c_str(), szEnforcementModeOptions[0]))
+            { }
+            else if (0 == wcscmp(sEnforcementMode.c_str(), szEnforcementModeOptions[1]))
+            {
+                extensions.bServicesModePresent = true;
+                extensions.dwServiceEnforcementMode = 1;
+            }
+            else if (0 == wcscmp(sEnforcementMode.c_str(), szEnforcementModeOptions[2]))
+            {
+                extensions.bServicesModePresent = true;
+                extensions.dwServiceEnforcementMode = 2;
+            }
+            else
+            {
+                //TODO: Invalid -- fail here?
+            }
+        }
+    }
+    size_t ixSystemAppsStart = sRedstone.find(sAngle + szSystemApps);
+    if (std::wstring::npos != ixSystemAppsStart)
+    {
+        size_t ixAllow = sRedstone.find(szAllow, ixSystemAppsStart);
+        if (std::wstring::npos != ixAllow)
+        {
+            // Get the text between the next two dquotes
+            size_t ixDQ0 = sRedstone.find(L'"', ixAllow);
+            if (std::wstring::npos == ixDQ0)
+                return false;
+            size_t ixAllowValue = ixDQ0 + 1;
+            size_t ixDQ1 = sRedstone.find(L'"', ixAllowValue);
+            if (std::wstring::npos == ixDQ1)
+                return false;
+            std::wstring sAllow = sRedstone.substr(ixDQ0 + 1, ixDQ1 - ixAllowValue);
+            if (0 == wcscmp(sAllow.c_str(), szAllowOptions[0]))
+            {
+                extensions.dwAllowWindows = 0;
+            }
+            else if (0 == wcscmp(sAllow.c_str(), szAllowOptions[1]))
+            {
+                extensions.dwAllowWindows = 1;
+            }
+            else
+            {
+                //TODO: Invalid -- fail here?
+            }
         }
     }
 

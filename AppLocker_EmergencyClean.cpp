@@ -1,4 +1,5 @@
 #include <Windows.h>
+#include <set>
 
 #include "HEX.h"
 #include "StringUtils.h"
@@ -85,18 +86,62 @@ bool AppLocker_EmergencyClean::ListAppLockerBinaryFiles(FileInfoCollection_t& fi
 	return RecursiveFileList(sRootDir, fileInfoCollection);
 }
 
-bool AppLocker_EmergencyClean::DeleteAppLockerBinaryFiles()
+/// <summary>
+/// Delete all files and directories under System32\AppLocker.
+/// </summary>
+/// <param name="sErrorInfo">Output: error info if any failures</param>
+/// <returns>true if successful, false otherwise</returns>
+bool AppLocker_EmergencyClean::DeleteAppLockerBinaryFiles(std::wstring& sErrorInfo)
 {
-	//TODO: consider reimplementing and not deleting AppCache.dat, AppCache.dat.LOG1, AppCache.dat.LOG2. (Does this matter? Would this be better?)
-	SHFILEOPSTRUCTW fileop = { 0 };
-	// Ensure that the path is double-NUL-terminated
-	wchar_t szPathSpec[MAX_PATH] = { 0 };
-	const std::wstring sRootDir = WindowsDirectories::System32Directory() + L"\\AppLocker\\*";
-	wcscpy_s(szPathSpec, sRootDir.c_str());
-	fileop.pFrom = szPathSpec;
-	fileop.wFunc = FO_DELETE;
-	fileop.fFlags = FOF_NO_UI;
-	Wow64FsRedirection wow64FSRedir(true);
-	int shfoRet = SHFileOperationW(&fileop);
-	return (0 == shfoRet && FALSE == fileop.fAnyOperationsAborted);
+	sErrorInfo.clear();
+	std::wstringstream strErrorInfo;
+	bool bSuccess = false;
+	FileInfoCollection_t fileInfoCollection;
+	std::set<std::wstring> directories;
+	const std::wstring sRootDir = WindowsDirectories::System32Directory() + L"\\AppLocker";
+	if (RecursiveFileList(sRootDir, fileInfoCollection))
+	{
+		strErrorInfo << L"Could not delete the following:" << std::endl;
+		bSuccess = true;
+		// Delete all the files, and build a sorted list of the directory names
+		for (size_t ixFileInfo = 0; ixFileInfo < fileInfoCollection.size(); ++ixFileInfo)
+		{
+			FileInfo_t& fileInfo = fileInfoCollection[ixFileInfo];
+			if (!fileInfo.bIsDirectory)
+			{
+				if (!DeleteFileW(fileInfo.sFullPath.c_str()))
+				{
+					bSuccess = false;
+					DWORD dwLastErr = GetLastError();
+					strErrorInfo << fileInfo.sFullPath << L": " << SysErrorMessage(dwLastErr) << std::endl;
+				}
+			}
+			else
+			{
+				// Don't want to delete the root directory
+				if (sRootDir != fileInfo.sFullPath)
+				{
+					directories.insert(fileInfo.sFullPath);
+				}
+			}
+		}
+		// Delete them in reverse alpha order (which should delete a directory's subdirectories before the parent
+		for (
+			std::set<std::wstring>::const_reverse_iterator rIterDir = directories.rbegin();
+			rIterDir != directories.rend();
+			rIterDir++)
+		{
+			if (!RemoveDirectoryW(rIterDir->c_str()))
+			{
+				bSuccess = false;
+				DWORD dwLastErr = GetLastError();
+				strErrorInfo << *rIterDir << L": " << SysErrorMessage(dwLastErr) << std::endl;
+			}
+		}
+		if (!bSuccess)
+		{
+			sErrorInfo = strErrorInfo.str();
+		}
+	}
+	return bSuccess;
 }

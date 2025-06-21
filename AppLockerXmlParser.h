@@ -17,6 +17,20 @@ struct RuleInfo_t
 typedef std::vector<RuleInfo_t> RuleInfoCollection_t;
 
 /// <summary>
+/// For optional AppLocker rule collection extensions
+/// https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/rule-collection-extensions
+/// </summary>
+struct RuleCollectionExtensions_t
+{
+	bool bServicesModePresent;
+	unsigned long dwServiceEnforcementMode; // value maps to <ThresholdExtensions><Services EnforcementMode
+	unsigned long dwAllowWindows;            // value maps to <RedstoneExtensions><SystemApps Allow
+
+	RuleCollectionExtensions_t() : bServicesModePresent(false), dwServiceEnforcementMode(0), dwAllowWindows(0) {}
+	void Clear() { bServicesModePresent = false; dwServiceEnforcementMode = 0; dwAllowWindows = 0; }
+};
+
+/// <summary>
 /// Custom XML parser specifically for AppLocker policy XML documents and the purposes of applying policy through Group Policy or CSP/MDM.
 /// Note that it's not a strict XML parser and assumes for the most part that the input document is well-formed.
 /// </summary>
@@ -53,12 +67,14 @@ public:
 	/// </summary>
 	/// <param name="sRuleCollectionXml">Input: the XML representing a rule collection</param>
 	/// <param name="dwEnforcementMode">Output: an integer corresponding to the collection's enforcement mode: 1 for Enforce, 0 for Audit</param>
+	/// <param name="extensions">Output: values corresponding to optional RuleCollectionExtensions element</param>
 	/// <param name="rules">A collection of structures containing the XML for each rule and the GUID ID.
 	/// Note: returns rule info only if enforcement mode is Enforce or Audit; returns nothing if enforcement mode is "not configured".</param>
 	/// <returns>true if successful (even if no rules returned), false on any parsing error.</returns>
 	static bool ParseRuleCollection(
 		const std::wstring& sRuleCollectionXml, 
 		unsigned long& dwEnforcementMode, 
+		RuleCollectionExtensions_t& extensions,
 		RuleInfoCollection_t& rules);
 
 private:
@@ -71,5 +87,13 @@ private:
 	/// <returns>true if successful, false on any parsing error.</returns>
 	static bool ParseRules(const std::wstring& sRuleCollectionXml, const wchar_t* szRuleName, RuleInfoCollection_t& rules);
 
+	/// <summary>
+	/// Provide support for AppLocker rule collection extensions
+	/// https://learn.microsoft.com/en-us/windows/security/application-security/application-control/app-control-for-business/applocker/rule-collection-extensions
+	/// </summary>
+	/// <param name="sRuleCollectionXml">Input: the XML representing a rule collection</param>
+	/// <param name="extensions">Output: a collection of AppLocker rule collection extension settings</param>
+	/// <returns>true if successful, false on any parsing error.</returns>
+	static bool ParseExtensions(const std::wstring& sRuleCollectionXml, RuleCollectionExtensions_t& extensions);
 };
 

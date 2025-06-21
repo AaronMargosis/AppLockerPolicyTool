@@ -13,7 +13,7 @@ public:
 	/// <summary>
 	/// Retrieve XML document representing LGPO-configured AppLocker policy.
 	/// Does not require administrative rights.
-	/// TODO: non-admin gets "access denied" failure if the LGPO directories are not present.
+	/// TODO: non-admin gets "access denied" failure if the LGPO directories are not present. Test for that.
 	/// </summary>
 	/// <param name="sAppLockerPolicyXml">Output: AppLocker policy XML</param>
 	/// <param name="sErrorInfo">Output: error information</param>

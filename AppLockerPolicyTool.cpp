@@ -9,6 +9,8 @@ Also provides an emergency interface directly into the AppLocker policy cache in
 */
 
 #include <Windows.h>
+#include <io.h>
+#include <fcntl.h>
 #include <iostream>
 #include <iomanip>
 #include "AppLockerPolicy.h"
@@ -54,12 +56,65 @@ void Usage(const wchar_t* szError, const wchar_t* argv0)
 	exit(-1);
 }
 
+// ------------------------------------------------------------------------------------------
+/// <summary>
+/// Class that wraps writing UTF-8 to an fstream or to stdout
+/// </summary>
+class wostreamWrapper
+{
+public:
+	wostreamWrapper()
+		: m_pStream(&std::wcout), m_bUsingFilestream(false)
+	{}
+	~wostreamWrapper()
+	{
+		// Close filestream if opened.
+		if (m_bUsingFilestream)
+			m_FileStream.close();
+	}
+	/// <summary>
+	/// Pass in a file name to redirect output to it. Returns true on success, false on failure.
+	/// </summary>
+	bool RedirectToFile(const std::wstring& sFilename)
+	{
+		m_FileStream.open(sFilename, std::ios_base::out);
+		if (!m_FileStream.fail())
+		{
+			m_pStream = &m_FileStream;
+			// Write BOM when redirecting to a file.
+			std::locale loc = Utf8FileUtility::LocaleForWritingUtf8File();
+			m_pStream->imbue(loc);
+			m_bUsingFilestream = true;
+			return true;
+		}
+		else
+		{
+			return false;
+		}
+	}
+	std::wostream& stream()
+	{
+		return *m_pStream;
+	}
+private:
+	std::wostream* m_pStream;
+	std::wofstream m_FileStream;
+	bool m_bUsingFilestream;
+private:
+	// Not implemented
+	wostreamWrapper(const wostreamWrapper&) = delete;
+	wostreamWrapper& operator = (const wostreamWrapper&) = delete;
+};
+
+// ------------------------------------------------------------------------------------------
+
+
 // Forward declare the little helper functions called by wmain.
-int GetLgpoPolicy(const std::wstring& sOutputFile);
-int GetGpoEffectivePolicy(const std::wstring& sOutputFile);
+int GetLgpoPolicy(wostreamWrapper& targetStream);
+int GetGpoEffectivePolicy(wostreamWrapper& targetStream);
 int SetLgpoPolicy(const std::wstring& sFilename);
 int ClearLgpoPolicy();
-int GetCspPolicies(const std::wstring& sOutputFile);
+int GetCspPolicies(wostreamWrapper& targetStream);
 int SetCspPolicy(const std::wstring& sFilename, const std::wstring& sGroupName);
 int DeleteAllCspPolicies();
 int Do911List();
@@ -67,6 +122,13 @@ int Do911DeleteAll();
 
 int wmain(int argc, wchar_t** argv)
 {
+	// Set output mode to UTF8.
+	if (_setmode(_fileno(stdout), _O_U8TEXT) == -1 || _setmode(_fileno(stderr), _O_U8TEXT) == -1)
+	{
+		std::wcerr << L"Unable to set stdout and/or stderr modes to UTF8." << std::endl;
+	}
+
+
 	bool bCspMode = false, bLgpoMode = false, bGpoEffectiveMode = false, b911Mode = false;
 	bool bGetPolicies = false, bOutToFile = false, bSetPolicies = false, bDeleteAll = false, bClear = false, bList = false;
 	std::wstring sPolicyFile, sOutputFile;
@@ -165,11 +227,22 @@ int wmain(int argc, wchar_t** argv)
 		Usage(L"Unsupported mode/operation combination.", argv[0]);
 	}
 
+	// Set up output target
+	wostreamWrapper targetStream;
+	if (sOutputFile.length() > 0)
+	{
+		if (!targetStream.RedirectToFile(sOutputFile))
+		{
+			std::wcerr << L"Unable to redirect output to \"" << sOutputFile << L"\"" << std::endl;
+			exit(-2);
+		}
+	}
+
 	if (bLgpoMode)
 	{
 		if (bGetPolicies)
 		{
-			return GetLgpoPolicy(sOutputFile);
+			return GetLgpoPolicy(targetStream);
 		}
 		if (bSetPolicies)
 		{
@@ -184,7 +257,7 @@ int wmain(int argc, wchar_t** argv)
 	{
 		if (bGetPolicies)
 		{
-			return GetGpoEffectivePolicy(sOutputFile);
+			return GetGpoEffectivePolicy(targetStream);
 		}
 	}
 	else if (bCspMode)
@@ -192,7 +265,7 @@ int wmain(int argc, wchar_t** argv)
 		// AppLocker CSP interfaces require running as System. They fail silently even if you run with admin rights but not as System.
 		// No "access denied" errors identifiable at all.
 		// So, proactively check for System and error out if not running as System.
-		//TODO: if running as elevated-admin but not as System, incorporate the RunInSession0_Framework to execute the needed code as System.
+		//TODO: if running as elevated-admin but not as System, adapt the RunInSession0_Framework to execute the needed code as System.
 		WhoAmI whoAmI;
 		if (!whoAmI.IsSystem())
 		{
@@ -204,7 +277,7 @@ int wmain(int argc, wchar_t** argv)
 		}
 		if (bGetPolicies)
 		{
-			return GetCspPolicies(sOutputFile);
+			return GetCspPolicies(targetStream);
 		}
 		if (bSetPolicies)
 		{
@@ -232,60 +305,15 @@ int wmain(int argc, wchar_t** argv)
 
 // ------------------------------------------------------------------------------------------
 
-/// <summary>
-/// Class that wraps writing UTF-8 to an fstream or to stdout
-/// </summary>
-class wostreamWrapper
-{
-public:
-	/// <summary>
-	/// Constructor. Pass in a file name to write to the filename, or an empty string to write to stdout.
-	/// </summary>
-	/// <param name="sFilename">Filename to write to (empty string for stdout)</param>
-	wostreamWrapper(const std::wstring& sFilename)
-		: m_pStream(&std::wcout), m_bUsingFilestream(false)
-	{
-		if (sFilename.length() > 0)
-		{
-			m_FileStream.open(sFilename, std::ios_base::out);
-			if (!m_FileStream.fail())
-			{
-				m_pStream = &m_FileStream;
-				m_bUsingFilestream = true;
-			}
-		}
-		std::locale loc = Utf8FileUtility::LocaleForWritingUtf8File();
-		m_pStream->imbue(loc);
-	}
-	~wostreamWrapper()
-	{
-		// Close filestream if opened.
-		if (m_bUsingFilestream)
-			m_FileStream.close();
-	}
-	std::wostream& stream()
-	{
-		return *m_pStream;
-	}
-private:
-	std::wostream* m_pStream;
-	std::wofstream m_FileStream;
-	bool m_bUsingFilestream;
-private:
-	// Not implemented
-	wostreamWrapper(const wostreamWrapper&) = delete;
-	wostreamWrapper& operator = (const wostreamWrapper&) = delete;
-};
 
 // ------------------------------------------------------------------------------------------
 
-int GetLgpoPolicy(const std::wstring& sOutputFile)
+int GetLgpoPolicy(wostreamWrapper& targetStream)
 {
 	std::wstring sAppLockerPolicyXml, sErrorInfo;
 	if (AppLockerPolicy_LGPO::GetLocalPolicy(sAppLockerPolicyXml, sErrorInfo))
 	{
-		wostreamWrapper os(sOutputFile);
-		os.stream() << sAppLockerPolicyXml << std::endl;
+		targetStream.stream() << sAppLockerPolicyXml << std::endl;
 		return 0;
 	}
 	else
@@ -295,13 +323,12 @@ int GetLgpoPolicy(const std::wstring& sOutputFile)
 	}
 }
 
-int GetGpoEffectivePolicy(const std::wstring& sOutputFile)
+int GetGpoEffectivePolicy(wostreamWrapper& targetStream)
 {
 	std::wstring sAppLockerPolicyXml, sErrorInfo;
 	if (AppLockerPolicy_LGPO::GetEffectivePolicy(sAppLockerPolicyXml, sErrorInfo))
 	{
-		wostreamWrapper os(sOutputFile);
-		os.stream() << sAppLockerPolicyXml << std::endl;
+		targetStream.stream() << sAppLockerPolicyXml << std::endl;
 		return 0;
 	}
 	else
@@ -351,7 +378,7 @@ bool CspStatusCheck(const AppLockerPolicy_CSP& csp)
 	return retval;
 }
 
-int GetCspPolicies(const std::wstring& sOutputFile)
+int GetCspPolicies(wostreamWrapper& targetStream)
 {
 	AppLockerPolicies_t policies;
 	AppLockerPolicy_CSP csp;
@@ -369,7 +396,6 @@ int GetCspPolicies(const std::wstring& sOutputFile)
 	// If there are multiple policies defined through CSP, write them each to file, preceded by policy name.
 	// If there's just one, just write it to the file without labeling.
 	//TODO: Output needs to be something more programmatically consumable when there's more than one CSP-configured policy. JSON and a different exit code? Something with more obvious delimiter characters?
-	wostreamWrapper os(sOutputFile);
 	for (
 		AppLockerPolicies_t::const_iterator iterPolicies = policies.begin();
 		iterPolicies != policies.end();
@@ -378,12 +404,12 @@ int GetCspPolicies(const std::wstring& sOutputFile)
 	{
 		if (policies.size() > 1)
 		{
-			os.stream()
+			targetStream.stream()
 				<< std::endl
 				<< L"Policy name: " << iterPolicies->first << std::endl
 				<< std::endl;
 		}
-		os.stream() << iterPolicies->second.Policy() << std::endl;
+		targetStream.stream() << iterPolicies->second.Policy() << std::endl;
 	}
 
 	return 0;
@@ -480,14 +506,15 @@ File creation time   File last written    Filesize  File path
 
 int Do911DeleteAll()
 {
-	if (AppLocker_EmergencyClean::DeleteAppLockerBinaryFiles())
+	std::wstring sErrorInfo;
+	if (AppLocker_EmergencyClean::DeleteAppLockerBinaryFiles(sErrorInfo))
 	{
 		std::wcout << L"AppLocker binary files deleted." << std::endl;
 		return 0;
 	}
 	else
 	{
-		std::wcout << L"Failure: AppLocker binary file deletion failed." << std::endl;
+		std::wcout << sErrorInfo << std::endl;
 		std::wcout << std::endl;
 		Do911List();
 		return -1;
