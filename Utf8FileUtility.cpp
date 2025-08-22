@@ -5,11 +5,7 @@
 //
 //
 
-// Need to allow use of fopen() -- fopen_s() isn't available in our Linux dev environment.
-// (Note that this define won't work if precompiled headers are in use, unless it's part of the precompile)
-// #define _CRT_SECURE_NO_WARNINGS
 #include <Windows.h>
-typedef unsigned char byte;
 #include <stdio.h>
 #include "Utf8FileUtility.h"
 

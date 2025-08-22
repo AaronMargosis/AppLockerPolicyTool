@@ -20,9 +20,7 @@ static void AddFSObjectToCollection(const std::wstring& sObjName, bool bIsDirect
 	fileInfo.sFullPath = sObjName;
 
 	DWORD dwFlags = (bIsDirectory ? FILE_FLAG_BACKUP_SEMANTICS : 0);
-	Wow64FsRedirection wow64FSRedir(true);
 	HANDLE hFile = CreateFileW(sObjName.c_str(), 0, FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, dwFlags, NULL);
-	wow64FSRedir.Revert();
 	if (INVALID_HANDLE_VALUE != hFile)
 	{
 		FILETIME ftCreateTime, ftLastAccessTime, ftLastWriteTime;
@@ -83,6 +81,7 @@ bool AppLocker_EmergencyClean::ListAppLockerBinaryFiles(FileInfoCollection_t& fi
 {
 	fileInfoCollection.clear();
 	const std::wstring sRootDir = WindowsDirectories::System32Directory() + L"\\AppLocker";
+	Wow64FsRedirection wow64FSRedir(true);
 	return RecursiveFileList(sRootDir, fileInfoCollection);
 }
 
@@ -99,6 +98,7 @@ bool AppLocker_EmergencyClean::DeleteAppLockerBinaryFiles(std::wstring& sErrorIn
 	FileInfoCollection_t fileInfoCollection;
 	std::set<std::wstring> directories;
 	const std::wstring sRootDir = WindowsDirectories::System32Directory() + L"\\AppLocker";
+	Wow64FsRedirection wow64FSRedir(true);
 	if (RecursiveFileList(sRootDir, fileInfoCollection))
 	{
 		strErrorInfo << L"Could not delete the following:" << std::endl;
